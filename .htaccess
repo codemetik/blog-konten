@@ -1,0 +1,51 @@
+# Enable Rewrite Engine
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # Set RewriteBase ke folder blog (sesuaikan dengan path lengkap)
+    RewriteBase /webai/blog-konten/
+    
+    # ===== MAIN ROUTING =====
+    # Jangan rewrite jika URL adalah folder atau file yang benar-benar ada
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_FILENAME} !-f
+    
+    # ===== HOMEPAGE ROUTING =====
+    # index atau index.php tetap ke index.php
+    RewriteCond %{REQUEST_URI} ^/?$ [OR]
+    RewriteCond %{REQUEST_URI} ^/index/?$
+    RewriteRule ^(.*)$ index.php?%{QUERY_STRING} [L,QSA]
+    
+    # ===== POST/ARTICLE ROUTING (slug-based) =====
+    # URL: /artikel/judul-artikel
+    # Rewrite ke: /post.php?slug=judul-artikel
+    RewriteRule ^([a-z0-9\-]+)/?$ post.php?slug=$1 [L,QSA]
+    
+    # ===== ADMIN ROUTING =====
+    # /admin/* routes
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^admin/([a-z0-9\-]+)/?$ admin/index.php?page=$1 [L,QSA]
+    
+    # ===== ABOUT PAGE =====
+    RewriteRule ^tentang/?$ about.html [L]
+    
+    # ===== CONTACT PAGE =====
+    RewriteRule ^kontak/?$ contact.html [L]
+    
+    # ===== TRAILING SLASH REDIRECT =====
+    # Redirect non-trailing slash ke trailing slash (optional, uncomment jika ingin)
+    # RewriteCond %{REQUEST_FILENAME} !-f
+    # RewriteCond %{REQUEST_FILENAME} !-d
+    # RewriteRule ^(.+)$ $1/ [R=301,L]
+    
+</IfModule>
+
+# ===== SECURITY HEADERS =====
+<IfModule mod_headers.c>
+    # Prevent access to sensitive files
+    <FilesMatch "\.(env|sql|md|txt)$">
+        Order Allow,Deny
+        Deny from all
+    </FilesMatch>
+</IfModule>

@@ -1,0 +1,27 @@
+=== DELETE POST DEBUG ===
+Timestamp: 2026-02-10 05:08:44
+Post ID: 45
+Featured Image: uploads/posts/posts_1770699866_c5dc233913cd6616.png
+Content length: 717
+Images detected: 1
+  - uploads/posts/posts_1770699866_c5dc233913cd6616.png
+POST DELETED FROM DB: YES
+Deleting: uploads/posts/posts_1770699866_c5dc233913cd6616.png ... SUCCESS
+Total Deleted: 1
+Total Failed: 0
+
+
+--- 2026-02-10 05:23:34 ---
+Post ID: 46
+Featured Image: uploads/posts/posts_1770700601_87c3c7210eccfc92.png
+Content length: 717
+Images detected: 2
+  - uploads/posts/posts_1770700601_87c3c7210eccfc92.png
+  - uploads/posts/posts_1770700579_a82104bd3c9c24b9.png
+Attempting: uploads/posts/posts_1770700601_87c3c7210eccfc92.png
+  ✓ Deleted
+Attempting: uploads/posts/posts_1770700579_a82104bd3c9c24b9.png
+  ✓ Deleted
+Total deleted: 2
+Total failed: 0
+

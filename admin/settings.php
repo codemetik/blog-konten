@@ -9,97 +9,109 @@ if (!isset($_SESSION['admin_logged_in'])) {
     exit;
 }
 
-// Handle cleanup action
-$cleanup_result = null;
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'cleanup_selected') {
-        $orphaned_files = isset($_POST['files']) ? (array)$_POST['files'] : [];
+// Function to scan directory recursively and build tree
+function scanDirectoryTree($path, $basePath = null, $depth = 0) {
+    if ($basePath === null) {
+        $basePath = $path;
+    }
+    
+    $items = [];
+    $maxDepth = 3; // Limit depth to avoid too much nesting
+    
+    if (!is_dir($path) || $depth > $maxDepth) {
+        return $items;
+    }
+    
+    try {
+        $files = scandir($path);
+        sort($files);
         
-        $deleted_count = 0;
-        $failed_count = 0;
-        $errors = [];
-        
-        foreach ($orphaned_files as $filename) {
-            $filename = basename($filename); // Security: only allow filename, no path
-            $file_path = 'uploads/posts/' . $filename;
+        foreach ($files as $file) {
+            if ($file === '.' || $file === '..') {
+                continue;
+            }
             
-            if (delete_image_file($file_path)) {
-                $deleted_count++;
+            $fullPath = $path . DIRECTORY_SEPARATOR . $file;
+            $relativePath = str_replace($basePath, '', $fullPath);
+            
+            // Skip certain directories
+            $skipDirs = ['.git', 'node_modules', '.vscode'];
+            $skip = false;
+            foreach ($skipDirs as $skipDir) {
+                if (strpos($file, $skipDir) !== false) {
+                    $skip = true;
+                    break;
+                }
+            }
+            if ($skip) continue;
+            
+            if (is_dir($fullPath)) {
+                $items[] = [
+                    'name' => $file,
+                    'type' => 'dir',
+                    'path' => $relativePath,
+                    'children' => scanDirectoryTree($fullPath, $basePath, $depth + 1),
+                    'depth' => $depth
+                ];
             } else {
-                $failed_count++;
-                $errors[] = $filename;
+                $size = filesize($fullPath);
+                $items[] = [
+                    'name' => $file,
+                    'type' => 'file',
+                    'path' => $relativePath,
+                    'size' => $size,
+                    'size_display' => formatFileSize($size),
+                    'modified' => filemtime($fullPath),
+                    'modified_date' => date('d M Y H:i', filemtime($fullPath)),
+                    'depth' => $depth
+                ];
             }
         }
-        
-        $cleanup_result = [
-            'deleted' => $deleted_count,
-            'failed' => $failed_count,
-            'errors' => $errors
-        ];
+    } catch (Exception $e) {
+        // Handle errors silently
     }
+    
+    return $items;
 }
 
-// Scan all images in uploads/posts/
-$uploads_dir = '../uploads/posts/';
-$all_images = [];
-if (is_dir($uploads_dir)) {
-    $files = scandir($uploads_dir);
-    foreach ($files as $file) {
-        if ($file !== '.' && $file !== '..' && is_file($uploads_dir . $file)) {
-            // Only include image files
-            $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-            if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp'])) {
-                $all_images[] = $file;
-            }
-        }
-    }
+// Function to format file size
+function formatFileSize($bytes) {
+    $units = ['B', 'KB', 'MB', 'GB'];
+    $bytes = max($bytes, 0);
+    $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
+    $pow = min($pow, count($units) - 1);
+    $bytes /= (1 << (10 * $pow));
+    
+    return round($bytes, 2) . ' ' . $units[$pow];
 }
 
-// Get all image references from all posts
-$referenced_images = [];
-$posts_query = "SELECT content FROM posts WHERE content IS NOT NULL AND content != ''";
-$posts_result = mysqli_query($conn, $posts_query);
-
-while ($row = mysqli_fetch_assoc($posts_result)) {
-    $extracted = extract_images_from_content($row['content']);
-    foreach ($extracted as $img_path) {
-        $filename = basename($img_path);
-        $referenced_images[$filename] = true;
-    }
+// Function to get file icon
+function getFileIcon($filename) {
+    $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    
+    $icons = [
+        'php' => 'bi-filetype-php',
+        'html' => 'bi-filetype-html',
+        'css' => 'bi-filetype-css',
+        'js' => 'bi-filetype-js',
+        'json' => 'bi-filetype-json',
+        'sql' => 'bi-database',
+        'jpg' => 'bi-image',
+        'jpeg' => 'bi-image',
+        'png' => 'bi-image',
+        'gif' => 'bi-image',
+        'webp' => 'bi-image',
+        'txt' => 'bi-file-text',
+        'md' => 'bi-markdown',
+        'pdf' => 'bi-filetype-pdf'
+    ];
+    
+    return isset($icons[$ext]) ? $icons[$ext] : 'bi-file-earmark';
 }
 
-// Also check featured images
-$featured_query = "SELECT featured_image FROM posts WHERE featured_image IS NOT NULL AND featured_image != ''";
-$featured_result = mysqli_query($conn, $featured_query);
-
-while ($row = mysqli_fetch_assoc($featured_result)) {
-    $filename = basename($row['featured_image']);
-    $referenced_images[$filename] = true;
-}
-
-// Find orphaned images
-$orphaned_images = [];
-foreach ($all_images as $img) {
-    if (!isset($referenced_images[$img])) {
-        $file_path = $uploads_dir . $img;
-        $orphaned_images[] = [
-            'filename' => $img,
-            'file_path' => $file_path,
-            'size' => filesize($file_path),
-            'size_kb' => round(filesize($file_path) / 1024, 2),
-            'modified' => filemtime($file_path),
-            'modified_date' => date('d M Y H:i:s', filemtime($file_path))
-        ];
-    }
-}
-
-// Sort by date (newest first)
-usort($orphaned_images, function($a, $b) {
-    return $b['modified'] - $a['modified'];
-});
-
-$total_orphaned = count($orphaned_images);
-$total_orphaned_size = array_sum(array_column($orphaned_images, 'size'));
+// Scan project directory
+$projectPath = '../';
+$projectStructure = scanDirectoryTree($projectPath);
 
 ?>
 <!DOCTYPE html>
@@ -107,18 +119,22 @@ $total_orphaned_size = array_sum(array_column($orphaned_images, 'size'));
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cleanup Orphaned Images - Admin</title>
+    <title>Pengaturan - Admin</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
     <link rel="stylesheet" href="../css/admin-style.css">
     <style>
-        .orphaned-item { background: #fff; border-left: 4px solid #ef4444; padding: 1rem; margin-bottom: 0.8rem; border-radius: 4px; }
-        .orphaned-item.selected { background: #ffe0e0; }
-        .orphaned-item input[type="checkbox"] { margin-right: 1rem; }
-        .orphaned-item .filename { font-weight: 600; font-family: monospace; color: #6366f1; }
-        .orphaned-item .meta { font-size: 0.85rem; color: #666; margin-top: 0.5rem; }
-        .btn-group-actions { margin-top: 1rem; }
-        .thumbnail-preview { max-width: 80px; max-height: 80px; border-radius: 4px; margin-right: 1rem; }
+        .folder-tree { margin: 1rem 0; }
+        .tree-item { margin: 0.25rem 0; }
+        .tree-dir { font-weight: 600; color: #6366f1; }
+        .tree-file { color: #333; }
+        .tree-indent { display: inline-block; }
+        .file-badge { font-size: 0.75rem; }
+        .tree-item-info { color: #999; font-size: 0.85rem; }
+        .file-type-icon { width: 20px; text-align: center; margin-right: 0.5rem; }
+        .tree-container { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 1rem; font-family: 'Courier New', monospace; max-height: 600px; overflow-y: auto; }
+        .breadcrumb-path { background: #e7f3ff; border-left: 4px solid #2196F3; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; font-family: monospace; }
+        .stats-card { border-left: 4px solid #6366f1; }
     </style>
 </head>
 <body>
@@ -176,12 +192,12 @@ $total_orphaned_size = array_sum(array_column($orphaned_images, 'size'));
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link active" href="cleanup-orphaned-images.php">
+                            <a class="nav-link" href="cleanup-orphaned-images.php">
                                 <i class="bi bi-file-image me-2"></i> Clean Orphaned
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="settings.php">
+                            <a class="nav-link active" href="settings.php">
                                 <i class="bi bi-gear me-2"></i> Pengaturan
                             </a>
                         </li>
@@ -192,219 +208,330 @@ $total_orphaned_size = array_sum(array_column($orphaned_images, 'size'));
             <!-- Main Content -->
             <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 py-4">
                 <h1 class="h2 mb-4">
-                    <i class="bi bi-broom me-2"></i> Cleanup Orphaned Images
+                    <i class="bi bi-gear me-2"></i> Pengaturan & Struktur Proyek
                 </h1>
 
-                <!-- Statistics Cards -->
+                <!-- Breadcrumb Path -->
+                <div class="breadcrumb-path">
+                    <i class="bi bi-folder-fill"></i> 
+                    <strong>Lokasi Proyek:</strong> <code>c:\laragon\www\webai\blog-konten</code>
+                </div>
+
+                <!-- Project Statistics -->
                 <div class="row g-4 mb-4">
                     <div class="col-md-6 col-lg-3">
-                        <div class="card border-0 shadow-sm" style="border-left: 4px solid var(--primary);">
+                        <div class="card border-0 shadow-sm stats-card">
                             <div class="card-body">
                                 <div class="d-flex justify-content-between align-items-start">
                                     <div>
-                                        <small class="text-muted">Total Images</small>
-                                        <h3 class="fw-bold" style="color: var(--primary);"><?php echo count($all_images); ?></h3>
+                                        <small class="text-muted">Versi PHP</small>
+                                        <h3 class="fw-bold" style="color: #6366f1;"><?php echo phpversion(); ?></h3>
                                     </div>
-                                    <i class="bi bi-images" style="font-size: 2rem; color: var(--primary); opacity: 0.3;"></i>
+                                    <i class="bi bi-filetype-php" style="font-size: 2rem; color: #6366f1; opacity: 0.3;"></i>
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     <div class="col-md-6 col-lg-3">
-                        <div class="card border-0 shadow-sm" style="border-left: 4px solid var(--danger);">
+                        <div class="card border-0 shadow-sm stats-card" style="border-left-color: #ff9800;">
                             <div class="card-body">
                                 <div class="d-flex justify-content-between align-items-start">
                                     <div>
-                                        <small class="text-muted">Orphaned Images</small>
-                                        <h3 class="fw-bold" style="color: var(--danger);"><?php echo $total_orphaned; ?></h3>
+                                        <small class="text-muted">Max Upload</small>
+                                        <h3 class="fw-bold" style="color: #ff9800;"><?php echo ini_get('upload_max_filesize'); ?></h3>
                                     </div>
-                                    <i class="bi bi-exclamation-circle" style="font-size: 2rem; color: var(--danger); opacity: 0.3;"></i>
+                                    <i class="bi bi-cloud-arrow-up" style="font-size: 2rem; color: #ff9800; opacity: 0.3;"></i>
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     <div class="col-md-6 col-lg-3">
-                        <div class="card border-0 shadow-sm" style="border-left: 4px solid var(--warning);">
+                        <div class="card border-0 shadow-sm stats-card" style="border-left-color: #4caf50;">
                             <div class="card-body">
                                 <div class="d-flex justify-content-between align-items-start">
                                     <div>
-                                        <small class="text-muted">Orphaned Size</small>
-                                        <h3 class="fw-bold" style="color: var(--warning);"><?php echo round($total_orphaned_size / 1024 / 1024, 2); ?> MB</h3>
+                                        <small class="text-muted">Memory Limit</small>
+                                        <h3 class="fw-bold" style="color: #4caf50;"><?php echo ini_get('memory_limit'); ?></h3>
                                     </div>
-                                    <i class="bi bi-folder-fill" style="font-size: 2rem; color: var(--warning); opacity: 0.3;"></i>
+                                    <i class="bi bi-memory" style="font-size: 2rem; color: #4caf50; opacity: 0.3;"></i>
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     <div class="col-md-6 col-lg-3">
-                        <div class="card border-0 shadow-sm" style="border-left: 4px solid var(--success);">
+                        <div class="card border-0 shadow-sm stats-card" style="border-left-color: #2196f3;">
                             <div class="card-body">
                                 <div class="d-flex justify-content-between align-items-start">
                                     <div>
-                                        <small class="text-muted">Clean Status</small>
-                                        <h3 class="fw-bold" style="color: var(--success);"><?php echo ($total_orphaned == 0 ? '✓ Clean' : 'Alert'); ?></h3>
+                                        <small class="text-muted">Max Post Size</small>
+                                        <h3 class="fw-bold" style="color: #2196f3;"><?php echo ini_get('post_max_size'); ?></h3>
                                     </div>
-                                    <i class="bi bi-<?php echo ($total_orphaned == 0 ? 'check-circle' : 'broom'); ?>" style="font-size: 2rem; color: var(--success); opacity: 0.3;"></i>
+                                    <i class="bi bi-hdd" style="font-size: 2rem; color: #2196f3; opacity: 0.3;"></i>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
 
-        <!-- Cleanup Result Alert -->
-        <?php if ($cleanup_result): ?>
-        <div class="alert <?php echo ($cleanup_result['failed'] == 0) ? 'alert-success' : 'alert-warning'; ?> alert-dismissible fade show" role="alert">
-            <i class="bi <?php echo ($cleanup_result['failed'] == 0) ? 'bi-check-circle' : 'bi-exclamation-circle'; ?> me-2"></i>
-            <strong>Cleanup Result!</strong>
-            Berhasil dihapus: <strong><?php echo $cleanup_result['deleted']; ?></strong> file
-            <?php if ($cleanup_result['failed'] > 0): ?>
-                | Gagal: <strong><?php echo $cleanup_result['failed']; ?></strong> file
-            <?php endif; ?>
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-        <div class="alert alert-info alert-dismissible fade show" role="alert">
-            <i class="bi bi-info-circle me-2"></i>
-            Halaman akan direload untuk menampilkan data terbaru...
-            <script>
-                setTimeout(() => location.reload(), 2000);
-            </script>
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-        <?php endif; ?>
-
-                <!-- Orphaned Images List -->
-                <div class="card border-0 shadow-sm">
+                <!-- Folder Structure -->
+                <div class="card border-0 shadow-sm mb-4">
                     <div class="card-header bg-white border-bottom">
                         <h5 class="card-title fw-bold mb-0">
-                            <i class="bi bi-trash me-2" style="color: #ef4444;"></i>
-                            Orphaned Images (<?php echo $total_orphaned; ?>)
+                            <i class="bi bi-folder2-open me-2" style="color: #ff9800;"></i>
+                            Struktur Folder & File Proyek
                         </h5>
                     </div>
                     <div class="card-body">
-                        <?php if ($total_orphaned > 0): ?>
-                        
-                        <form method="POST">
-                            <input type="hidden" name="action" value="cleanup_selected">
-                            
-                            <div class="mb-3">
-                                <div class="btn-group-actions">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="selectAllBtn">
-                                        <i class="bi bi-check-all me-1"></i>Select All
-                                    </button>
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="deselectAllBtn">
-                                        <i class="bi bi-x-lg me-1"></i>Deselect All
-                                    </button>
-                                    <button type="submit" class="btn btn-sm btn-danger" id="deleteSelectedBtn" disabled>
-                                        <i class="bi bi-trash me-1"></i>Delete Selected
-                                    </button>
-                                </div>
+                        <div class="tree-container">
+                            <div class="tree-item" style="margin-bottom: 1rem;">
+                                <span class="tree-dir">
+                                    <i class="bi bi-folder-fill"></i> blog-konten/
+                                </span>
                             </div>
+                            
+                            <?php 
+                            function renderTreeItems($items, $depth = 1) {
+                                foreach ($items as $item): 
+                                    $indent = str_repeat('&nbsp;&nbsp;&nbsp;&nbsp;', $depth);
+                                    $isLast = (array_key_last($items) === array_search($item, array_values($items)));
+                                    $connector = $isLast ? '└── ' : '├── ';
+                                    ?>
+                                    <div class="tree-item" style="margin-left: <?php echo ($depth * 15); ?>px;">
+                                        <span style="font-size: 0.9rem; color: #666;"><?php echo $connector; ?></span>
+                                        
+                                        <?php if ($item['type'] === 'dir'): ?>
+                                            <span class="tree-dir">
+                                                <i class="bi bi-folder-fill"></i> <?php echo htmlspecialchars($item['name']); ?>/
+                                            </span>
+                                            <?php if (!empty($item['children'])): ?>
+                                                <div>
+                                                    <?php renderTreeItems($item['children'], $depth + 1); ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        <?php else: ?>
+                                            <span class="tree-file">
+                                                <i class="bi <?php echo getFileIcon($item['name']); ?>"></i> 
+                                                <?php echo htmlspecialchars($item['name']); ?>
+                                            </span>
+                                            <span class="tree-item-info ms-2">
+                                                (<?php echo $item['size_display']; ?> • <?php echo $item['modified_date']; ?>)
+                                            </span>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endforeach;
+                            }
+                            
+                            renderTreeItems($projectStructure);
+                            ?>
+                        </div>
+                    </div>
+                </div>
 
-                            <div class="orphaned-list">
-                                <?php foreach ($orphaned_images as $img): ?>
-                                <div class="orphaned-item" data-filename="<?php echo htmlspecialchars($img['filename']); ?>">
-                                    <div class="d-flex align-items-center">
-                                        <input type="checkbox" class="orphaned-checkbox" name="files[]" value="<?php echo htmlspecialchars($img['filename']); ?>">
+                <!-- Tab Sections -->
+                <ul class="nav nav-tabs mb-4" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="config-tab" data-bs-toggle="tab" data-bs-target="#config-content" type="button" role="tab">
+                            <i class="bi bi-gear me-2"></i>Konfigurasi
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="uploads-tab" data-bs-toggle="tab" data-bs-target="#uploads-content" type="button" role="tab">
+                            <i class="bi bi-cloud-arrow-up me-2"></i>Upload Folders
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="database-tab" data-bs-toggle="tab" data-bs-target="#database-content" type="button" role="tab">
+                            <i class="bi bi-database me-2"></i>Database
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content">
+                    <!-- Config Tab -->
+                    <div class="tab-pane fade show active" id="config-content" role="tabpanel">
+                        <div class="card border-0 shadow-sm">
+                            <div class="card-body">
+                                <h6 class="card-title mb-3"><i class="bi bi-file-earmark-code me-2"></i>File Konfigurasi</h6>
+                                <ul class="list-group list-group-flush">
+                                    <li class="list-group-item">
+                                        <strong>config/db.php</strong>
+                                        <small class="d-block text-muted">Konfigurasi koneksi database MySQL</small>
+                                    </li>
+                                    <li class="list-group-item">
+                                        <strong>config/helpers.php</strong>
+                                        <small class="d-block text-muted">Fungsi-fungsi helper dan utilitas</small>
+                                    </li>
+                                    <li class="list-group-item">
+                                        <strong>css/style.css</strong>
+                                        <small class="d-block text-muted">Stylesheet untuk halaman publik</small>
+                                    </li>
+                                    <li class="list-group-item">
+                                        <strong>css/admin-style.css</strong>
+                                        <small class="d-block text-muted">Stylesheet untuk halaman admin</small>
+                                    </li>
+                                    <li class="list-group-item">
+                                        <strong>js/script.js</strong>
+                                        <small class="d-block text-muted">Script JavaScript untuk frontend</small>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Uploads Tab -->
+                    <div class="tab-pane fade" id="uploads-content" role="tabpanel">
+                        <div class="card border-0 shadow-sm">
+                            <div class="card-body">
+                                <h6 class="card-title mb-3"><i class="bi bi-folder-check me-2"></i>Folder Upload</h6>
+                                <div class="row g-3">
+                                    <?php 
+                                    $uploadFolders = [
+                                        ['path' => 'uploads/articles', 'desc' => 'Gambar artikel'],
+                                        ['path' => 'uploads/featured', 'desc' => 'Gambar featured article'],
+                                        ['path' => 'uploads/posts', 'desc' => 'Gambar dalam post/konten']
+                                    ];
+                                    
+                                    foreach ($uploadFolders as $folder):
+                                        $fullPath = '../' . $folder['path'];
+                                        $exists = is_dir($fullPath);
+                                        $fileCount = 0;
+                                        $folderSize = 0;
                                         
-                                        <?php
-                                        $ext = strtolower(pathinfo($img['filename'], PATHINFO_EXTENSION));
-                                        if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp'])) {
-                                            $img_src = '../uploads/posts/' . htmlspecialchars($img['filename']);
-                                            echo '<img src="' . $img_src . '" alt="preview" class="thumbnail-preview">';
+                                        if ($exists) {
+                                            $files = array_diff(scandir($fullPath), ['.', '..']);
+                                            foreach ($files as $file) {
+                                                if (is_file($fullPath . '/' . $file)) {
+                                                    $fileCount++;
+                                                    $folderSize += filesize($fullPath . '/' . $file);
+                                                }
+                                            }
                                         }
-                                        ?>
-                                        
-                                        <div class="flex-grow-1">
-                                            <div class="filename"><?php echo htmlspecialchars($img['filename']); ?></div>
-                                            <div class="meta">
-                                                <span class="badge bg-light text-dark me-2"><?php echo $img['size_kb']; ?> KB</span>
-                                                <span class="text-muted"><?php echo $img['modified_date']; ?></span>
+                                    ?>
+                                    <div class="col-md-6">
+                                        <div class="card border <?php echo $exists ? 'border-success' : 'border-danger'; ?>">
+                                            <div class="card-body">
+                                                <h6 class="card-title">
+                                                    <i class="bi bi-folder-fill me-2" style="color: #ff9800;"></i>
+                                                    <?php echo htmlspecialchars($folder['path']); ?>
+                                                </h6>
+                                                <p class="card-text text-muted small mb-2"><?php echo htmlspecialchars($folder['desc']); ?></p>
+                                                <div class="d-flex justify-content-between">
+                                                    <span><strong>File:</strong> <?php echo $fileCount; ?></span>
+                                                    <span><strong>Ukuran:</strong> <?php echo formatFileSize($folderSize); ?></span>
+                                                </div>
+                                                <div class="mt-2">
+                                                    <span class="badge <?php echo $exists ? 'bg-success' : 'bg-danger'; ?>">
+                                                        <?php echo $exists ? '✓ Ada' : '✗ Tidak Ada'; ?>
+                                                    </span>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
+                                    <?php endforeach; ?>
                                 </div>
-                                <?php endforeach; ?>
                             </div>
-
-                            <hr>
-                            
-                            <div class="alert alert-warning">
-                                <i class="bi bi-exclamation-triangle me-2"></i>
-                                <strong>Peringatan:</strong> Gambar yang dihapus tidak bisa dikembalikan. Pastikan tidak ada artikel yang menggunakan gambar ini.
-                            </div>
-                        </form>
-
-                        <?php else: ?>
-                        
-                        <div class="alert alert-success">
-                            <i class="bi bi-check-circle me-2"></i>
-                            <strong>Bagus!</strong> Tidak ada orphaned images. Folder uploads/posts/ sudah clean.
                         </div>
+                    </div>
 
-                        <?php endif; ?>
+                    <!-- Database Tab -->
+                    <div class="tab-pane fade" id="database-content" role="tabpanel">
+                        <div class="card border-0 shadow-sm">
+                            <div class="card-body">
+                                <h6 class="card-title mb-3"><i class="bi bi-database me-2"></i>Informasi Database</h6>
+                                <ul class="list-group list-group-flush">
+                                    <li class="list-group-item">
+                                        <strong>Database</strong>
+                                        <small class="d-block text-muted">smk_blog_db</small>
+                                    </li>
+                                    <li class="list-group-item">
+                                        <strong>File Dump</strong>
+                                        <small class="d-block text-muted">database/smk_blog_db.sql</small>
+                                    </li>
+                                    <li class="list-group-item">
+                                        <strong>Koneksi</strong>
+                                        <small class="d-block text-muted">
+                                            User: root | Host: localhost
+                                        </small>
+                                    </li>
+                                    <li class="list-group-item">
+                                        <strong>Tabel Utama</strong>
+                                        <small class="d-block text-muted">
+                                            • posts • categories • users • images_log
+                                        </small>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
                     </div>
                 </div>
+
+                <!-- Documentation -->
+                <div class="card border-0 shadow-sm mt-4">
+                    <div class="card-header bg-white border-bottom">
+                        <h5 class="card-title fw-bold mb-0">
+                            <i class="bi bi-file-earmark-text me-2"></i>File Dokumentasi
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="list-group">
+                            <?php 
+                            $docFiles = [
+                                'BUG_FIX_SUMMARY.md',
+                                'CLEANUP_MENU_INTEGRATION.md',
+                                'IMAGE_DELETION_FINAL_REPORT.md',
+                                'IMAGE_DELETION_FIX_COMPLETE.md',
+                                'IMAGE_DELETION_FIX.md',
+                                'ORPHANED_IMAGES_CLEANUP.md',
+                                'TECHNICAL_REFERENCE_IMAGE_DELETION.md',
+                                'TESTING_GUIDE_IMAGE_DELETION.md'
+                            ];
+                            
+                            foreach ($docFiles as $doc):
+                                $docPath = '../' . $doc;
+                                if (file_exists($docPath)):
+                                    $size = formatFileSize(filesize($docPath));
+                            ?>
+                            <div class="list-group-item">
+                                <div class="d-flex w-100 justify-content-between align-items-center">
+                                    <div>
+                                        <h6 class="mb-1">
+                                            <i class="bi bi-markdown me-2" style="color: #6366f1;"></i>
+                                            <?php echo htmlspecialchars($doc); ?>
+                                        </h6>
+                                    </div>
+                                    <span class="badge bg-light text-dark"><?php echo $size; ?></span>
+                                </div>
+                            </div>
+                            <?php endif; endforeach; ?>
+                        </div>
+                    </div>
+                </div>
+
             </main>
         </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        const checkboxes = document.querySelectorAll('.orphaned-checkbox');
-        const selectAllBtn = document.getElementById('selectAllBtn');
-        const deselectAllBtn = document.getElementById('deselectAllBtn');
-        const deleteBtn = document.getElementById('deleteSelectedBtn');
-
-        function updateDeleteButton() {
-            const checkedCount = document.querySelectorAll('.orphaned-checkbox:checked').length;
-            deleteBtn.disabled = checkedCount === 0;
-            deleteBtn.textContent = checkedCount > 0 
-                ? `Delete Selected (${checkedCount})` 
-                : 'Delete Selected';
-        }
-
-        function updateItemStyle() {
-            document.querySelectorAll('.orphaned-item').forEach(item => {
-                const checkbox = item.querySelector('.orphaned-checkbox');
-                if (checkbox.checked) {
-                    item.classList.add('selected');
-                } else {
-                    item.classList.remove('selected');
-                }
-            });
-        }
-
-        selectAllBtn.addEventListener('click', () => {
-            checkboxes.forEach(cb => cb.checked = true);
-            updateDeleteButton();
-            updateItemStyle();
-        });
-
-        deselectAllBtn.addEventListener('click', () => {
-            checkboxes.forEach(cb => cb.checked = false);
-            updateDeleteButton();
-            updateItemStyle();
-        });
-
-        checkboxes.forEach(checkbox => {
-            checkbox.addEventListener('change', () => {
-                updateDeleteButton();
-                updateItemStyle();
+        // Handle tab switching
+        document.querySelectorAll('[data-bs-toggle="tab"]').forEach(tab => {
+            tab.addEventListener('shown.bs.tab', function() {
+                // Store active tab in localStorage
+                localStorage.setItem('activeSettingsTab', this.getAttribute('data-bs-target'));
             });
         });
 
-        // Confirm before delete
-        document.querySelector('form')?.addEventListener('submit', function(e) {
-            const checkedCount = document.querySelectorAll('.orphaned-checkbox:checked').length;
-            if (checkedCount > 0) {
-                if (!confirm(`Apakah Anda yakin ingin menghapus ${checkedCount} gambar? Tindakan ini tidak bisa dibatalkan.`)) {
-                    e.preventDefault();
-                }
+        // Restore active tab
+        const activeTab = localStorage.getItem('activeSettingsTab');
+        if (activeTab) {
+            const tabButton = document.querySelector(`[data-bs-target="${activeTab}"]`);
+            if (tabButton) {
+                new bootstrap.Tab(tabButton).show();
             }
-        });
+        }
     </script>
 </body>
 </html>
